@@ -1,27 +1,20 @@
-// Manager.cpp
-
 #include "Manager.h"
 #include <unordered_map>
 
-// ============================================================
-// Assignment 3: Online Leaderboard
+// Online Leaderboard
 //
-// Strategy:
-//   Adaptive prefix repair + player_id -> ScoreBoard index cache.
+// Strategy: Adaptive prefix repair + player_id -> ScoreBoard index cache.
 //
-// Invariant:
-//   board[0..prefix_len-1] is the true top-prefix, sorted by:
-//     1. higher score first
-//     2. if score ties, smaller player_id first
+// Invariant: board[0..prefix_len-1] is the true top-prefix, sorted by:
+//  1. higher score first
+//  2. if score ties, smaller player_id first
 //
 // The suffix is kept valid but not globally sorted. submit/remove update the
 // ScoreBoard immediately, and top_k/rank repair only when needed.
 //
-// Note:
-//   The ScoreBoard remains the source of truth for all valid entries.
-//   Manager keeps only physical-index metadata; it does not keep score values
-//   or an independently maintained leaderboard order.
-// ============================================================
+//  The ScoreBoard remains the source of truth for all valid entries.
+//  Manager keeps only physical-index metadata; it does not keep score values
+//  or an independently maintained leaderboard order.
 
 static std::unordered_map<int, int> pos; // player_id -> current index
 
@@ -29,8 +22,8 @@ static int prefix_len = 0;
 static bool full_sorted = false;
 static long long rank_scan_work = 0;
 
-// Thresholds used to choose between local prefix repair, partial repair, and
-// full repair. They affect when ScoreBoard is rearranged, not what the answer is.
+// Thresholds used to choose between local prefix repair, partial repair, and full repair.
+// They affect when ScoreBoard is rearranged, not what the answer is.
 static const int PREFIX_KEEP_AFTER_FULL = 2980;
 static const int PARTIAL_REPAIR_TARGET = 3100;
 static const int REMOVE_PRESERVE_LIMIT = 256;
@@ -54,7 +47,8 @@ static bool idx_better(ScoreBoard &board, int a, int b) {
 }
 
 // Compare a ScoreBoard entry against a submitted key.
-// The key is temporary input; stored scores are still read from ScoreBoard.
+// The key is temporary input.
+// Stored scores are still read from ScoreBoard.
 static bool entry_better_than_key(ScoreBoard &board,
                                   int idx,
                                   int score,
@@ -111,8 +105,8 @@ static void swap_entries_known_a(ScoreBoard &board, int a, int b, int a_id) {
   pos[b_id] = a;
 }
 
-// Used inside sorting/selection routines. pos is rebuilt afterward from
-// ScoreBoard, so it is not updated for every raw swap.
+// Used inside sorting/selection routines. pos is rebuilt afterward from ScoreBoard.
+// So it is not updated for every raw swap.
 static void raw_swap_entries(ScoreBoard &board, int a, int b) {
   if (a == b) return;
   board.swap(a, b);
@@ -247,8 +241,8 @@ static int raw_partition_range(ScoreBoard &board, int lo, int hi) {
   return store;
 }
 
-// Custom quicksort over ScoreBoard entries. The smaller side is handled first
-// to keep recursion depth modest.
+// Custom quicksort over ScoreBoard entries.
+// The smaller side is handled first to keep recursion depth modest.
 static void raw_quick_sort_range(ScoreBoard &board, int lo, int hi) {
   while (lo < hi) {
     if (hi - lo <= 5) {
@@ -268,8 +262,7 @@ static void raw_quick_sort_range(ScoreBoard &board, int lo, int hi) {
   }
 }
 
-// Custom quickselect used to bring the top portion of a range forward without
-// fully sorting the suffix.
+// Custom quickselect used to bring the top portion of a range forward without fully sorting the suffix.
 static void raw_quick_select_top_range(ScoreBoard &board,
                                        int lo,
                                        int hi,
@@ -310,8 +303,8 @@ static void full_repair_sort(ScoreBoard &board) {
 }
 
 static void drop_full_sorted_for_mutation(ScoreBoard &board) {
-  // After a mutation, the whole board may no longer be sorted. Still, keeping
-  // a large prefix is useful because top_k() often asks for nearby k values.
+  // After a mutation, the whole board may no longer be sorted.
+  // Still, keeping a large prefix is useful because top_k() often asks for nearby k values.
   if (!full_sorted) return;
 
   int n = board.size();
@@ -326,8 +319,8 @@ static void drop_full_sorted_for_mutation(ScoreBoard &board) {
   full_sorted = false;
 }
 
-// Normalize metadata after submit/remove. If the maintained prefix covers all
-// entries, ScoreBoard is fully sorted again.
+// Normalize metadata after submit/remove.
+// If the maintained prefix covers all entries, ScoreBoard is fully sorted again.
 static void finish_after_mutation(ScoreBoard &board) {
   int n = board.size();
 
@@ -342,8 +335,8 @@ static void insert_candidate_into_prefix(ScoreBoard &board,
                                          int idx,
                                          int score,
                                          int player_id) {
-  // If the changed entry can enter the maintained top-prefix, put it near the
-  // end of the prefix and bubble it left to its correct prefix position.
+  // If the changed entry can enter the maintained top-prefix,
+  // put it near the end of the prefix and bubble it left to its correct prefix position.
   if (prefix_len <= 0) return;
   if (prefix_len >= board.size()) return;
 
@@ -372,8 +365,8 @@ static int find_best_index(ScoreBoard &board, int start, int n) {
   return best;
 }
 
-// Extend the maintained prefix one entry at a time. This is useful for small k,
-// where selection is cheaper than repairing a large range.
+// Extend the maintained prefix one entry at a time.
+// This is useful for small k, where selection is cheaper than repairing a large range.
 static void ensure_prefix(ScoreBoard &board, int need) {
   int n = board.size();
   if (need > n) {
@@ -390,8 +383,8 @@ static void ensure_prefix(ScoreBoard &board, int need) {
 }
 
 static void quickselect_extend_prefix(ScoreBoard &board, int need) {
-  // Extends the sorted prefix without sorting the whole board. The old prefix
-  // is already correct, so only the suffix part is selected/sorted.
+  // Extends the sorted prefix without sorting the whole board.
+  // The old prefix is already correct, so only the suffix part is selected/sorted.
   int n = board.size();
   if (need > n) {
     need = n;
@@ -413,8 +406,8 @@ static void quickselect_extend_prefix(ScoreBoard &board, int need) {
 }
 
 static void partial_repair_prefix(ScoreBoard &board, int need) {
-  // For large top_k(), a full sort is often more than necessary. This makes
-  // only the first 'need' entries the true sorted top-prefix.
+  // For large top_k(), a full sort is often more than necessary.
+  // This makes only the first need entries the true sorted top-prefix.
   int n = board.size();
   if (need > n) {
     need = n;
@@ -444,7 +437,8 @@ static void partial_repair_prefix(ScoreBoard &board, int need) {
 void init(ScoreBoard &board, int num_players) {
   (void)board;
 
-  // ScoreBoard starts empty. Only Manager-side metadata is reset here.
+  // ScoreBoard starts empty.
+  // Only Manager-side metadata is reset here.
   pos.clear();
   if (num_players > 0) {
     pos.reserve(num_players * 2 + 1);
@@ -461,8 +455,8 @@ void submit(ScoreBoard &board, int player_id, int score) {
   auto it = pos.find(player_id);
 
   if (it == pos.end()) {
-    // New players are always appended to ScoreBoard first. The prefix is fixed
-    // only if this new entry can affect the maintained top region.
+    // New players are always appended to ScoreBoard first.
+    // The prefix is fixed only if this new entry can affect the maintained top region.
     drop_full_sorted_for_mutation(board);
 
     int idx = board.size();
@@ -486,8 +480,8 @@ void submit(ScoreBoard &board, int player_id, int score) {
     return;
   }
 
-  // Existing score is updated inside ScoreBoard. Since scores only improve, an
-  // entry can only move toward the front of the leaderboard.
+  // Existing score is updated inside ScoreBoard.
+  // Since scores only improve, an entry can only move toward the front of the leaderboard.
   drop_full_sorted_for_mutation(board);
 
   idx = pos[player_id];
@@ -516,8 +510,8 @@ std::vector<int> top_k(ScoreBoard &board, int k) {
   }
 
   if (k > prefix_len) {
-    // Before returning, physically repair ScoreBoard[0..k-1]. The returned
-    // vector below is then built by reading those positions from ScoreBoard.
+    // Before returning, physically repair ScoreBoard[0..k-1].
+    // The returned vector below is then built by reading those positions from ScoreBoard.
     if (k == n || k > TOPK_FULL_SORT_LIMIT || (k > 64 && k * 4 > n * 3)) {
       int target = PARTIAL_REPAIR_TARGET;
       if (target < k) {
@@ -546,7 +540,8 @@ std::vector<int> top_k(ScoreBoard &board, int k) {
 }
 
 // Return the 0-based rank of a player based on the current ScoreBoard state.
-// pos only helps locate the physical entry; it is not independent rank data.
+// pos only helps locate the physical entry. 
+// It is not independent rank data.
 int rank(ScoreBoard &board, int player_id) {
   auto it = pos.find(player_id);
   if (it == pos.end()) return -1;
@@ -554,8 +549,8 @@ int rank(ScoreBoard &board, int player_id) {
   int idx = it->second;
 
   if (full_sorted || idx < prefix_len) {
-    // In these cases the physical index is the rank. read_id() is used as a
-    // final check that the index cache still points to the requested player.
+    // In these cases the physical index is the rank.
+    // read_id() is used as a final check that the index cache still points to the requested player.
     if (idx >= 0 && idx < board.size() && board.read_id(idx) == player_id) {
       return idx;
     }
@@ -577,8 +572,9 @@ int rank(ScoreBoard &board, int player_id) {
 
   int result = prefix_len;
 
-  // The target is outside the maintained prefix. Count only suffix entries
-  // that rank before it; all prefix entries are already before it.
+  // The target is outside the maintained prefix.
+  // Count only suffix entries that rank before it.
+  // All prefix entries are already before it.
   for (int i = prefix_len; i < n; ++i) {
     if (i == idx) continue;
 
@@ -600,8 +596,8 @@ void remove(ScoreBoard &board, int player_id) {
   auto it = pos.find(player_id);
   if (it == pos.end()) return;
 
-  // The entry is physically removed from ScoreBoard. If it was inside the
-  // maintained prefix, shrink the prefix rather than immediately refilling it.
+  // The entry is physically removed from ScoreBoard.
+  // If it was inside the maintained prefix, shrink the prefix rather than immediately refilling it.
   drop_full_sorted_for_mutation(board);
 
   int idx = it->second;
@@ -619,7 +615,8 @@ void remove(ScoreBoard &board, int player_id) {
 
     board.remove_last();
     pos.erase(player_id);
-  } else {
+  } 
+  else {
     if (idx < prefix_len) {
       prefix_len = idx;
     }
