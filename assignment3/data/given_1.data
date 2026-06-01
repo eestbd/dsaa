@@ -1,0 +1,161 @@
+100 160
+submit 1 286
+submit 2 43
+submit 3 331
+submit 4 429
+submit 5 245
+submit 6 485
+submit 7 89
+submit 8 271
+submit 9 1
+submit 10 191
+submit 11 499
+submit 12 193
+submit 13 292
+submit 14 119
+submit 15 34
+submit 16 196
+submit 17 206
+submit 18 51
+submit 19 23
+submit 20 61
+submit 21 393
+submit 22 109
+submit 23 193
+submit 24 51
+submit 25 211
+submit 26 26
+submit 27 314
+submit 28 15
+submit 29 284
+submit 30 262
+submit 31 35
+submit 32 399
+submit 33 462
+submit 34 100
+submit 35 395
+submit 36 97
+submit 37 14
+submit 38 363
+submit 39 117
+submit 40 403
+submit 41 482
+submit 42 401
+submit 43 328
+submit 44 204
+submit 45 472
+submit 46 236
+submit 47 182
+submit 48 267
+submit 49 468
+submit 50 16
+submit 51 305
+submit 52 57
+submit 53 280
+submit 54 102
+submit 55 107
+submit 56 63
+submit 57 125
+submit 58 311
+submit 59 17
+submit 60 60
+submit 61 402
+submit 62 70
+submit 63 283
+submit 64 497
+submit 65 189
+submit 66 45
+submit 67 301
+submit 68 236
+submit 69 392
+submit 70 143
+submit 71 227
+submit 72 417
+submit 73 482
+submit 74 296
+submit 75 91
+submit 76 422
+submit 77 374
+submit 78 166
+submit 79 271
+submit 80 229
+submit 81 273
+submit 82 410
+submit 83 409
+submit 84 234
+submit 85 205
+submit 86 354
+submit 87 38
+submit 88 388
+submit 89 384
+submit 90 289
+submit 91 221
+submit 92 336
+submit 93 458
+submit 94 301
+submit 95 15
+submit 96 389
+submit 97 170
+submit 98 438
+submit 99 314
+submit 100 430
+top_k 4
+top_k 6
+top_k 4
+top_k 9
+top_k 9
+top_k 10
+top_k 5
+top_k 3
+top_k 5
+top_k 6
+top_k 5
+top_k 6
+top_k 2
+top_k 9
+top_k 3
+top_k 5
+top_k 9
+top_k 5
+top_k 10
+top_k 3
+rank 1
+rank 45
+rank 94
+rank 80
+rank 71
+rank 76
+rank 70
+rank 71
+rank 74
+rank 20
+rank 65
+rank 50
+rank 44
+rank 66
+rank 32
+rank 40
+rank 76
+rank 4
+rank 65
+rank 74
+remove 1
+remove 2
+remove 3
+remove 4
+remove 5
+remove 6
+remove 7
+remove 8
+remove 9
+remove 10
+top_k 7
+top_k 1
+top_k 4
+top_k 4
+top_k 4
+top_k 4
+top_k 3
+top_k 8
+top_k 10
+top_k 3

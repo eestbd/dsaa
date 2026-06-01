@@ -1,0 +1,11 @@
+#include<iostream>
+#include<cstdlib>
+#include<ctime>
+using namespace std;
+
+int main() {
+	int stake, goal, trials, wins = 0;
+	cout << "Put stake, goal and trials\n";
+	cin >> stake >> goal >> trials;
+
+	sran
