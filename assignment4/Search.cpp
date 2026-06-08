@@ -122,7 +122,7 @@ int choose_sparse_screened_seed(Graph &graph, int n, int K,
   }
 
   int screen_count = min(n, 4);
-  int screen_pool = min(n, max(K + 30, 60));
+  int screen_pool = min(n, max(K + 22, 52));
   int best_seed = ranked_nodes[0];
   double best_score = -numeric_limits<double>::infinity();
   double first_score = -numeric_limits<double>::infinity();
