@@ -65,6 +65,17 @@ int next_pool_limit(int n, int current, int K) {
   return min(n, current + step);
 }
 
+int dense_pool_limit(int n, int K) {
+  if (n <= 80) {
+    return initial_pool_limit(n, K);
+  }
+
+  if (n < 2000) {
+    return min(n, max(K + 33, 53));
+  }
+  return min(n, max(K + 83, 113));
+}
+
 double candidate_score(int node, const vector<int> &node_weight,
                        const vector<int> &soft_edge,
                        const vector<int> &trap_edge,
@@ -325,6 +336,10 @@ SearchResult run_connected_greedy(Graph &graph, int n, int K, int seed,
         bad_count[node] = (trap_edge[node] <= bad_edge_limit) ? 1 : 0;
       }
     }
+  }
+
+  if (observed_density >= 0.45) {
+    pool_limit = min(pool_limit, max(K, dense_pool_limit(n, K)));
   }
 
   if (observed_density < 0.45 && K <= 80 &&
