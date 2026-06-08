@@ -97,6 +97,83 @@ GreedyProfile choose_profile(int n, double observed_density) {
   return {2.5, 1.0, 8.0, 2.0};
 }
 
+int choose_sparse_screened_seed(Graph &graph, int n, int K,
+                                const vector<int> &ranked_nodes) {
+  if (K <= 1 || n < 2000 || K > 80) {
+    return ranked_nodes[0];
+  }
+
+  int sample_limit = min(n, 4);
+  int sample_edges = 0;
+  for (int pos = 0; pos < sample_limit; ++pos) {
+    int target = ranked_nodes[pos];
+    if (target == ranked_nodes[0]) {
+      continue;
+    }
+    if (graph.read_map(ranked_nodes[0], target) < 0) {
+      sample_edges++;
+    }
+  }
+
+  double sample_density =
+      static_cast<double>(sample_edges) / static_cast<double>(max(1, sample_limit - 1));
+  if (sample_density >= 0.30) {
+    return ranked_nodes[0];
+  }
+
+  int screen_count = min(n, 4);
+  int screen_pool = min(n, max(K + 30, 60));
+  int best_seed = ranked_nodes[0];
+  double best_score = -numeric_limits<double>::infinity();
+  double first_score = -numeric_limits<double>::infinity();
+
+  for (int seed_index = 0; seed_index < screen_count; ++seed_index) {
+    int seed = ranked_nodes[seed_index];
+    int edge_count = 0;
+    int bad_count = 0;
+    long long edge_sum = 0;
+
+    for (int pos = 0; pos < screen_pool; ++pos) {
+      int target = ranked_nodes[pos];
+      if (target == seed) {
+        continue;
+      }
+
+      int edge = graph.read_map(seed, target);
+      if (edge < 0) {
+        edge_count++;
+        edge_sum += edge;
+        if (edge <= BAD_EDGE_LIMIT) {
+          bad_count++;
+        }
+      }
+    }
+
+    if (edge_count == 0) {
+      continue;
+    }
+
+    double average_edge =
+        static_cast<double>(edge_sum) / static_cast<double>(edge_count);
+    double score = static_cast<double>(edge_count) * 5.0 + average_edge -
+                   static_cast<double>(bad_count) * 4.0 -
+                   static_cast<double>(seed_index) * 0.1;
+
+    if (seed_index == 0) {
+      first_score = score;
+    }
+    if (score > best_score) {
+      best_score = score;
+      best_seed = seed;
+    }
+  }
+
+  if (best_seed != ranked_nodes[0] && best_score >= first_score + 5.0) {
+    return best_seed;
+  }
+  return ranked_nodes[0];
+}
+
 void update_summary(int source, int target, int edge,
                     vector<int> &soft_edge, vector<int> &trap_edge,
                     vector<int> &bad_count, vector<int> &seen_degree,
@@ -617,6 +694,7 @@ void Search_MMST(Graph &graph, int K) {
   });
 
   SearchResult best;
+  int primary_seed = choose_sparse_screened_seed(graph, n, K, ranked_nodes);
 
   if (K == 1) {
     best.nodes.push_back(ranked_nodes[0]);
@@ -638,9 +716,9 @@ void Search_MMST(Graph &graph, int K) {
     candidates.reserve(start_count);
     bool need_audit = (start_count > 1);
     for (int i = 0; i < start_count; ++i) {
+      int seed = (i == 0) ? primary_seed : ranked_nodes[i];
       SearchResult candidate =
-          run_connected_greedy(graph, n, K, ranked_nodes[i], node_weight,
-                               ranked_nodes);
+          run_connected_greedy(graph, n, K, seed, node_weight, ranked_nodes);
       if (candidate.valid) {
         candidate.audit_score = need_audit
                                     ? audit_mmst_score(graph, candidate.nodes,
