@@ -100,7 +100,7 @@ GreedyProfile choose_profile(int n, double observed_density) {
 void update_summary(int source, int target, int edge,
                     vector<int> &soft_edge, vector<int> &trap_edge,
                     vector<int> &bad_count, vector<int> &seen_degree,
-                    vector<int> &connect_parent) {
+                    vector<int> &connect_parent, int bad_edge_limit) {
   if (edge >= 0) {
     return;
   }
@@ -113,7 +113,7 @@ void update_summary(int source, int target, int edge,
   if (trap_edge[target] == NO_EDGE || edge < trap_edge[target]) {
     trap_edge[target] = edge;
   }
-  if (edge <= BAD_EDGE_LIMIT) {
+  if (edge <= bad_edge_limit) {
     bad_count[target]++;
   }
 }
@@ -122,7 +122,7 @@ void scan_new_node(Graph &graph, int source, const vector<int> &ranked_nodes,
                    int pool_limit, const vector<char> &in_selected,
                    vector<int> &soft_edge, vector<int> &trap_edge,
                    vector<int> &bad_count, vector<int> &seen_degree,
-                   vector<int> &connect_parent) {
+                   vector<int> &connect_parent, int bad_edge_limit) {
   for (int pos = 0; pos < pool_limit; ++pos) {
     int target = ranked_nodes[pos];
     if (in_selected[target]) {
@@ -130,7 +130,7 @@ void scan_new_node(Graph &graph, int source, const vector<int> &ranked_nodes,
     }
     int edge = graph.read_map(source, target);
     update_summary(source, target, edge, soft_edge, trap_edge, bad_count,
-                   seen_degree, connect_parent);
+                   seen_degree, connect_parent, bad_edge_limit);
   }
 }
 
@@ -138,7 +138,8 @@ void expand_pool(Graph &graph, int old_limit, int new_limit,
                  const vector<int> &ranked_nodes, const vector<int> &selected,
                  const vector<char> &in_selected, vector<int> &soft_edge,
                  vector<int> &trap_edge, vector<int> &bad_count,
-                 vector<int> &seen_degree, vector<int> &connect_parent) {
+                 vector<int> &seen_degree, vector<int> &connect_parent,
+                 int bad_edge_limit) {
   for (int source : selected) {
     for (int pos = old_limit; pos < new_limit; ++pos) {
       int target = ranked_nodes[pos];
@@ -147,7 +148,7 @@ void expand_pool(Graph &graph, int old_limit, int new_limit,
       }
       int edge = graph.read_map(source, target);
       update_summary(source, target, edge, soft_edge, trap_edge, bad_count,
-                     seen_degree, connect_parent);
+                     seen_degree, connect_parent, bad_edge_limit);
     }
   }
 }
@@ -216,18 +217,38 @@ SearchResult run_connected_greedy(Graph &graph, int n, int K, int seed,
 
   int pool_limit = max(K, initial_pool_limit(n, K));
   scan_new_node(graph, seed, ranked_nodes, pool_limit, in_selected, soft_edge,
-                trap_edge, bad_count, seen_degree, connect_parent);
+                trap_edge, bad_count, seen_degree, connect_parent,
+                BAD_EDGE_LIMIT);
 
   int initial_edges = 0;
+  vector<int> observed_edges;
+  observed_edges.reserve(pool_limit);
   for (int pos = 0; pos < pool_limit; ++pos) {
     int node = ranked_nodes[pos];
     if (!in_selected[node] && seen_degree[node] > 0) {
       initial_edges++;
+      observed_edges.push_back(trap_edge[node]);
     }
   }
   double observed_density =
       static_cast<double>(initial_edges) / static_cast<double>(max(1, pool_limit - 1));
   GreedyProfile profile = choose_profile(n, observed_density);
+
+  int bad_edge_limit = BAD_EDGE_LIMIT;
+  if (!observed_edges.empty()) {
+    int bad_index = static_cast<int>(observed_edges.size()) / 3;
+    nth_element(observed_edges.begin(), observed_edges.begin() + bad_index,
+                observed_edges.end());
+    bad_edge_limit = observed_edges[bad_index];
+    bad_edge_limit = min(-55, max(-75, bad_edge_limit));
+
+    for (int pos = 0; pos < pool_limit; ++pos) {
+      int node = ranked_nodes[pos];
+      if (!in_selected[node] && seen_degree[node] > 0) {
+        bad_count[node] = (trap_edge[node] <= bad_edge_limit) ? 1 : 0;
+      }
+    }
+  }
 
   if (observed_density < 0.45 && K <= 80 &&
       ((n < 2000 && pool_limit < 120) ||
@@ -236,7 +257,7 @@ SearchResult run_connected_greedy(Graph &graph, int n, int K, int seed,
     int expanded_limit = min(n, target_limit);
     expand_pool(graph, pool_limit, expanded_limit, ranked_nodes, selected,
                 in_selected, soft_edge, trap_edge, bad_count, seen_degree,
-                connect_parent);
+                connect_parent, bad_edge_limit);
     pool_limit = expanded_limit;
   }
 
@@ -249,7 +270,7 @@ SearchResult run_connected_greedy(Graph &graph, int n, int K, int seed,
       int expanded_limit = next_pool_limit(n, pool_limit, K);
       expand_pool(graph, pool_limit, expanded_limit, ranked_nodes, selected,
                   in_selected, soft_edge, trap_edge, bad_count, seen_degree,
-                  connect_parent);
+                  connect_parent, bad_edge_limit);
       pool_limit = expanded_limit;
       chosen = choose_candidate(ranked_nodes, pool_limit, in_selected,
                                 node_weight, soft_edge, trap_edge, bad_count,
@@ -270,7 +291,7 @@ SearchResult run_connected_greedy(Graph &graph, int n, int K, int seed,
     if (static_cast<int>(selected.size()) < K) {
       scan_new_node(graph, chosen, ranked_nodes, pool_limit, in_selected,
                     soft_edge, trap_edge, bad_count, seen_degree,
-                    connect_parent);
+                    connect_parent, bad_edge_limit);
     }
   }
 
