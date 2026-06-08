@@ -97,7 +97,7 @@ GreedyProfile choose_profile(int n, double observed_density) {
 
   if (observed_density >= 0.45) {
     if (n < 2000) {
-      return {1.2, 0.3, 2.0, 0.5};
+      return {1.8, 0.7, 4.5, 1.0};
     }
     return {2.0, 0.7, 5.5, 1.2};
   }
