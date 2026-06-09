@@ -83,7 +83,7 @@ int sparse_initial_pool_limit(int n, int K) {
 
   int limit = max(3 * K, 80);
   if (n >= 3000) {
-    limit = max(4 * K, 180);
+    limit = max(4 * K, 190);
   }
   return min(n, max(K, limit));
 }
