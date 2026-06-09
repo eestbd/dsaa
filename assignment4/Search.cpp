@@ -141,10 +141,10 @@ GraphProfile estimate_profile(Graph &graph, int n, int K,
     return profile;
   }
 
-  int seed_count = min(n, (n <= 100) ? 2 : 4);
-  int sample_count = min(n, (n <= 100) ? max(8, K + 5) : 32);
+  int seed_count = min(n, (n <= 100) ? 2 : 3);
+  int sample_count = min(n, (n <= 100) ? max(8, K + 5) : 24);
   if (n >= 3000) {
-    sample_count = min(n, 32);
+    sample_count = min(n, 24);
   }
   sample_count = max(sample_count, min(n, max(24, K + 8)));
 
