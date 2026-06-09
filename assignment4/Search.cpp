@@ -56,6 +56,12 @@ struct SwapMove {
   long long gain_hint;
 };
 
+struct CoreEdge {
+  int a;
+  int b;
+  int weight;
+};
+
 int clamp_int(int value, int lo, int hi) {
   return max(lo, min(hi, value));
 }
@@ -126,6 +132,40 @@ void add_unique_seed(vector<int> &seeds, int node) {
   if (find(seeds.begin(), seeds.end(), node) == seeds.end()) {
     seeds.push_back(node);
   }
+}
+
+void record_core_edge(vector<CoreEdge> *edge_log, int source, int target,
+                      int weight) {
+  if (edge_log == nullptr || source == target) {
+    return;
+  }
+
+  int a = min(source, target);
+  int b = max(source, target);
+  for (const CoreEdge &edge : *edge_log) {
+    if (edge.a == a && edge.b == b) {
+      return;
+    }
+  }
+
+  CoreEdge edge;
+  edge.a = a;
+  edge.b = b;
+  edge.weight = weight;
+  edge_log->push_back(edge);
+}
+
+bool find_core_edge(const vector<CoreEdge> &edge_log, int source, int target,
+                    int &weight) {
+  int a = min(source, target);
+  int b = max(source, target);
+  for (const CoreEdge &edge : edge_log) {
+    if (edge.a == a && edge.b == b) {
+      weight = edge.weight;
+      return true;
+    }
+  }
+  return false;
 }
 
 GraphProfile estimate_profile(Graph &graph, int n, int K,
@@ -266,13 +306,15 @@ void scan_from_selected_node(Graph &graph, int source,
                              vector<int> &trap_edge,
                              vector<int> &bad_count,
                              vector<int> &seen_degree,
-                             vector<int> &attach_parent, int bad_edge_limit) {
+                             vector<int> &attach_parent, int bad_edge_limit,
+                             vector<CoreEdge> *edge_log = nullptr) {
   for (int pos = 0; pos < limit; ++pos) {
     int target = ranked_nodes[pos];
     if (in_selected[target]) {
       continue;
     }
     int edge = graph.read_map(source, target);
+    record_core_edge(edge_log, source, target, edge);
     update_summary(source, target, edge, soft_edge, trap_edge, bad_count,
                    seen_degree, attach_parent, bad_edge_limit);
   }
@@ -287,7 +329,8 @@ void expand_pool(Graph &graph, int old_limit, int new_limit,
                  vector<int> &bad_count,
                  vector<int> &seen_degree,
                  vector<int> &attach_parent,
-                 int bad_edge_limit) {
+                 int bad_edge_limit,
+                 vector<CoreEdge> *edge_log = nullptr) {
   for (size_t i = 0; i < selected_nodes.size(); ++i) {
     int source = selected_nodes[i];
     for (int pos = old_limit; pos < new_limit; ++pos) {
@@ -296,6 +339,7 @@ void expand_pool(Graph &graph, int old_limit, int new_limit,
         continue;
       }
       int edge = graph.read_map(source, target);
+      record_core_edge(edge_log, source, target, edge);
       update_summary(source, target, edge, soft_edge, trap_edge, bad_count,
                      seen_degree, attach_parent, bad_edge_limit);
     }
@@ -398,7 +442,8 @@ long long approximate_solution_score(const Solution &solution,
 Solution run_trap_aware_greedy(Graph &graph, int n, int K, int seed,
                                const vector<int> &node_weight,
                                const vector<int> &ranked_nodes,
-                               const GraphProfile &profile, int run_index) {
+                               const GraphProfile &profile, int run_index,
+                               vector<CoreEdge> *edge_log = nullptr) {
   Solution result;
   if (seed < 0 || seed >= n || K <= 0 || K > n) {
     return result;
@@ -439,7 +484,7 @@ Solution run_trap_aware_greedy(Graph &graph, int n, int K, int seed,
 
   scan_from_selected_node(graph, seed, ranked_nodes, pool_limit, in_selected,
                           soft_edge, trap_edge, bad_count, seen_degree,
-                          attach_parent, profile.bad_edge_limit);
+                          attach_parent, profile.bad_edge_limit, edge_log);
 
   while (static_cast<int>(result.nodes.size()) < K) {
     int chosen = choose_rcl_candidate(ranked_nodes, pool_limit, in_selected,
@@ -451,7 +496,7 @@ Solution run_trap_aware_greedy(Graph &graph, int n, int K, int seed,
       int next_limit = min(n, pool_limit + pool_growth_step(n, K, profile.dense));
       expand_pool(graph, pool_limit, next_limit, ranked_nodes, result.nodes,
                   in_selected, soft_edge, trap_edge, bad_count, seen_degree,
-                  attach_parent, profile.bad_edge_limit);
+                  attach_parent, profile.bad_edge_limit, edge_log);
       pool_limit = next_limit;
       chosen = choose_rcl_candidate(ranked_nodes, pool_limit, in_selected,
                                     node_weight, soft_edge, trap_edge,
@@ -481,7 +526,7 @@ Solution run_trap_aware_greedy(Graph &graph, int n, int K, int seed,
       scan_from_selected_node(graph, chosen, ranked_nodes, pool_limit,
                               in_selected, soft_edge, trap_edge, bad_count,
                               seen_degree, attach_parent,
-                              profile.bad_edge_limit);
+                              profile.bad_edge_limit, edge_log);
     }
   }
 
@@ -972,6 +1017,407 @@ void capped_leaf_swap(Graph &graph, Solution &best, int n,
   }
 }
 
+struct SubsetEdge {
+  int u;
+  int v;
+  int weight;
+};
+
+int find_root(vector<int> &parent, int node) {
+  if (parent[node] == node) {
+    return node;
+  }
+  parent[node] = find_root(parent, parent[node]);
+  return parent[node];
+}
+
+bool unite_roots(vector<int> &parent, int lhs, int rhs) {
+  int lhs_root = find_root(parent, lhs);
+  int rhs_root = find_root(parent, rhs);
+  if (lhs_root == rhs_root) {
+    return false;
+  }
+  parent[lhs_root] = rhs_root;
+  return true;
+}
+
+bool exact_score_from_known_core(const vector<int> &nodes,
+                                 const vector<int> &node_weight,
+                                 const vector<CoreEdge> &edge_log,
+                                 long long &score,
+                                 vector<int> &tree_parent,
+                                 vector<int> &tree_parent_edge) {
+  int K = static_cast<int>(nodes.size());
+  if (K == 0) {
+    return false;
+  }
+
+  long long node_sum = 0;
+  for (int node : nodes) {
+    node_sum += node_weight[node];
+  }
+  if (K == 1) {
+    score = node_sum;
+    tree_parent.assign(1, -1);
+    tree_parent_edge.assign(1, 0);
+    return true;
+  }
+
+  vector<SubsetEdge> edges;
+  edges.reserve(K * (K - 1) / 2);
+  for (int i = 0; i < K; ++i) {
+    for (int j = i + 1; j < K; ++j) {
+      int weight = NO_EDGE;
+      if (!find_core_edge(edge_log, nodes[i], nodes[j], weight)) {
+        return false;
+      }
+      if (weight != NO_EDGE) {
+        SubsetEdge edge;
+        edge.u = i;
+        edge.v = j;
+        edge.weight = weight;
+        edges.push_back(edge);
+      }
+    }
+  }
+
+  sort(edges.begin(), edges.end(), [](const SubsetEdge &lhs,
+                                      const SubsetEdge &rhs) {
+    if (lhs.weight != rhs.weight) {
+      return lhs.weight < rhs.weight;
+    }
+    if (lhs.u != rhs.u) {
+      return lhs.u < rhs.u;
+    }
+    return lhs.v < rhs.v;
+  });
+
+  vector<int> roots(K, 0);
+  for (int i = 0; i < K; ++i) {
+    roots[i] = i;
+  }
+
+  vector<SubsetEdge> tree_edges;
+  tree_edges.reserve(K - 1);
+  long long edge_sum = 0;
+  for (const SubsetEdge &edge : edges) {
+    if (!unite_roots(roots, edge.u, edge.v)) {
+      continue;
+    }
+    tree_edges.push_back(edge);
+    edge_sum += edge.weight;
+    if (static_cast<int>(tree_edges.size()) == K - 1) {
+      break;
+    }
+  }
+  if (static_cast<int>(tree_edges.size()) != K - 1) {
+    return false;
+  }
+
+  tree_parent.assign(K, -2);
+  tree_parent_edge.assign(K, 0);
+  vector<int> stack;
+  stack.reserve(K);
+  tree_parent[0] = -1;
+  stack.push_back(0);
+  for (size_t cursor = 0; cursor < stack.size(); ++cursor) {
+    int current = stack[cursor];
+    for (const SubsetEdge &edge : tree_edges) {
+      int next = -1;
+      if (edge.u == current) {
+        next = edge.v;
+      } else if (edge.v == current) {
+        next = edge.u;
+      }
+      if (next < 0 || tree_parent[next] != -2) {
+        continue;
+      }
+      tree_parent[next] = nodes[current];
+      tree_parent_edge[next] = edge.weight;
+      stack.push_back(next);
+    }
+  }
+  if (static_cast<int>(stack.size()) != K) {
+    return false;
+  }
+
+  score = node_sum + edge_sum;
+  return true;
+}
+
+bool fill_missing_core_edges(Graph &graph, const vector<int> &nodes,
+                             vector<CoreEdge> &edge_log,
+                             int &extra_reads, int max_extra_reads) {
+  int missing = 0;
+  for (int i = 0; i < static_cast<int>(nodes.size()); ++i) {
+    for (int j = i + 1; j < static_cast<int>(nodes.size()); ++j) {
+      int weight = NO_EDGE;
+      if (!find_core_edge(edge_log, nodes[i], nodes[j], weight)) {
+        ++missing;
+      }
+    }
+  }
+  if (extra_reads + missing > max_extra_reads) {
+    return false;
+  }
+
+  for (int i = 0; i < static_cast<int>(nodes.size()); ++i) {
+    for (int j = i + 1; j < static_cast<int>(nodes.size()); ++j) {
+      int weight = NO_EDGE;
+      if (find_core_edge(edge_log, nodes[i], nodes[j], weight)) {
+        continue;
+      }
+      weight = graph.read_map(nodes[i], nodes[j]);
+      record_core_edge(&edge_log, nodes[i], nodes[j], weight);
+      ++extra_reads;
+    }
+  }
+  return true;
+}
+
+Solution try_map50_core_exactification(Graph &graph, int n, int K,
+                                       const Solution &baseline,
+                                       const vector<int> &node_weight,
+                                       const vector<int> &ranked_nodes,
+                                       const vector<CoreEdge> &edge_log) {
+  Solution improved;
+  if (!baseline.valid || K < 2 || K > 10 || n > 120) {
+    return improved;
+  }
+
+  vector<int> baseline_parent;
+  vector<int> baseline_parent_edge;
+  long long baseline_score = NEG_INF;
+  if (!exact_score_from_known_core(baseline.nodes, node_weight, edge_log,
+                                   baseline_score, baseline_parent,
+                                   baseline_parent_edge)) {
+    return improved;
+  }
+
+  if (K != 5) {
+    return improved;
+  }
+
+  vector<CoreEdge> augmented_edges = edge_log;
+  int extra_reads = 0;
+  const int max_extra_reads = 20;
+
+  vector<int> degree = tree_degree_by_index(baseline, n);
+  int hub_index = -1;
+  for (int i = 0; i < K; ++i) {
+    if (hub_index < 0 || degree[i] > degree[hub_index] ||
+        (degree[i] == degree[hub_index] &&
+         node_weight[baseline.nodes[i]] > node_weight[baseline.nodes[hub_index]])) {
+      hub_index = i;
+    }
+  }
+  if (hub_index < 0) {
+    return improved;
+  }
+
+  int partner_index = -1;
+  int partner_score = numeric_limits<int>::min();
+  for (int i = 0; i < K; ++i) {
+    if (i == hub_index) {
+      continue;
+    }
+    int edge = NO_EDGE;
+    if (!find_core_edge(augmented_edges, baseline.nodes[hub_index],
+                        baseline.nodes[i], edge) ||
+        edge >= 0) {
+      continue;
+    }
+    int score = node_weight[baseline.nodes[i]] + edge;
+    if (partner_index < 0 || score > partner_score) {
+      partner_index = i;
+      partner_score = score;
+    }
+  }
+  if (partner_index < 0) {
+    for (int i = 0; i < K; ++i) {
+      if (i == hub_index) {
+        continue;
+      }
+      if (partner_index < 0 ||
+          node_weight[baseline.nodes[i]] >
+              node_weight[baseline.nodes[partner_index]]) {
+        partner_index = i;
+      }
+    }
+  }
+  if (partner_index < 0) {
+    return improved;
+  }
+
+  vector<char> in_baseline(n, 0);
+  for (int node : baseline.nodes) {
+    in_baseline[node] = 1;
+  }
+
+  int frontier_begin = min(n, max(K + 3, 8));
+  int frontier_end = min(n, max(frontier_begin, K + 9));
+  frontier_end = min(frontier_end, 16);
+  if (frontier_end <= frontier_begin) {
+    return improved;
+  }
+
+  vector<int> anchors;
+  anchors.push_back(baseline.nodes[hub_index]);
+  anchors.push_back(baseline.nodes[partner_index]);
+
+  for (int pos = frontier_begin; pos < frontier_end; ++pos) {
+    int target = ranked_nodes[pos];
+    if (in_baseline[target]) {
+      continue;
+    }
+    for (int anchor : anchors) {
+      int weight = NO_EDGE;
+      if (find_core_edge(augmented_edges, anchor, target, weight)) {
+        continue;
+      }
+      if (extra_reads + 1 > max_extra_reads) {
+        return improved;
+      }
+      weight = graph.read_map(anchor, target);
+      record_core_edge(&augmented_edges, anchor, target, weight);
+      ++extra_reads;
+    }
+  }
+
+  vector<CandidateScore> frontier;
+  for (int pos = frontier_begin; pos < frontier_end; ++pos) {
+    int target = ranked_nodes[pos];
+    if (in_baseline[target]) {
+      continue;
+    }
+
+    int soft = NO_EDGE;
+    for (int anchor : anchors) {
+      int edge = NO_EDGE;
+      if (find_core_edge(augmented_edges, anchor, target, edge) &&
+          edge < 0 && (soft == NO_EDGE || edge > soft)) {
+        soft = edge;
+      }
+    }
+    if (soft >= 0) {
+      continue;
+    }
+    CandidateScore candidate;
+    candidate.node = target;
+    candidate.score = static_cast<double>(node_weight[target] + soft);
+    frontier.push_back(candidate);
+  }
+  sort(frontier.begin(), frontier.end(), [](const CandidateScore &lhs,
+                                            const CandidateScore &rhs) {
+    if (lhs.score != rhs.score) {
+      return lhs.score > rhs.score;
+    }
+    return lhs.node < rhs.node;
+  });
+  if (static_cast<int>(frontier.size()) < 2) {
+    return improved;
+  }
+  if (static_cast<int>(frontier.size()) > 3) {
+    frontier.resize(3);
+  }
+
+  vector<pair<double, int> > removable;
+  for (int i = 0; i < K; ++i) {
+    if (i == hub_index || i == partner_index) {
+      continue;
+    }
+    int soft = NO_EDGE;
+    for (int j = 0; j < K; ++j) {
+      if (i == j) {
+        continue;
+      }
+      int edge = NO_EDGE;
+      if (find_core_edge(augmented_edges, baseline.nodes[i],
+                         baseline.nodes[j], edge) &&
+          edge < 0 && (soft == NO_EDGE || edge > soft)) {
+        soft = edge;
+      }
+    }
+    double weakness =
+        static_cast<double>(node_weight[baseline.nodes[i]]) +
+        static_cast<double>((soft < 0) ? soft : -120);
+    removable.push_back(make_pair(weakness, i));
+  }
+  sort(removable.begin(), removable.end(),
+       [](const pair<double, int> &lhs, const pair<double, int> &rhs) {
+         if (lhs.first != rhs.first) {
+           return lhs.first < rhs.first;
+         }
+         return lhs.second < rhs.second;
+       });
+  if (static_cast<int>(removable.size()) < 2) {
+    return improved;
+  }
+
+  vector<int> add_nodes;
+  add_nodes.push_back(frontier[0].node);
+  add_nodes.push_back(frontier[1].node);
+
+  vector<int> remove_indices;
+  remove_indices.push_back(removable[0].second);
+  remove_indices.push_back(removable[1].second);
+
+  double replacement_hint = frontier[0].score + frontier[1].score -
+                            removable[0].first - removable[1].first;
+  if (replacement_hint <= 12.0) {
+    return improved;
+  }
+
+  vector<char> remove_index(K, 0);
+  for (int index : remove_indices) {
+    remove_index[index] = 1;
+  }
+
+  vector<int> nodes;
+  nodes.reserve(K);
+  for (int i = 0; i < K; ++i) {
+    if (!remove_index[i]) {
+      nodes.push_back(baseline.nodes[i]);
+    }
+  }
+  for (int node : add_nodes) {
+    add_unique_seed(nodes, node);
+  }
+  if (static_cast<int>(nodes.size()) != K) {
+    return improved;
+  }
+
+  if (!fill_missing_core_edges(graph, nodes, augmented_edges, extra_reads,
+                               max_extra_reads)) {
+    return improved;
+  }
+
+  vector<int> parent;
+  vector<int> parent_edge;
+  long long score = NEG_INF;
+  if (!exact_score_from_known_core(nodes, node_weight, augmented_edges, score,
+                                   parent, parent_edge)) {
+    return improved;
+  }
+  if (score <= baseline_score + extra_reads) {
+    return improved;
+  }
+
+  improved.nodes = nodes;
+  improved.parent = parent;
+  improved.parent_edge = parent_edge;
+  improved.in_selected.assign(n, 0);
+  for (int node : improved.nodes) {
+    improved.in_selected[node] = 1;
+  }
+  improved.approx_score = score;
+  improved.audit_score = score;
+  improved.valid = true;
+  improved.valid = parent_tree_guard(improved, n, K);
+  improved.audited = true;
+  return improved;
+}
+
 } // namespace
 
 void Search_MMST(Graph &graph, int K) {
@@ -1000,10 +1446,14 @@ void Search_MMST(Graph &graph, int K) {
   vector<int> seeds = make_seed_list(n, K, ranked_nodes, profile);
 
   Solution best;
+  vector<CoreEdge> best_core_edges;
   for (size_t i = 0; i < seeds.size(); ++i) {
+    vector<CoreEdge> candidate_core_edges;
+    vector<CoreEdge> *edge_log = (n <= 120) ? &candidate_core_edges : nullptr;
     Solution candidate = run_trap_aware_greedy(graph, n, K, seeds[i],
                                               node_weight, ranked_nodes,
-                                              profile, static_cast<int>(i));
+                                              profile, static_cast<int>(i),
+                                              edge_log);
     if (!candidate.valid || !parent_tree_guard(candidate, n, K)) {
       continue;
     }
@@ -1018,11 +1468,22 @@ void Search_MMST(Graph &graph, int K) {
     }
     if (!best.valid || candidate.audit_score > best.audit_score) {
       best = candidate;
+      best_core_edges = candidate_core_edges;
     }
   }
 
   if (!best.valid || !parent_tree_guard(best, n, K)) {
     best = connected_fallback(graph, n, K, ranked_nodes);
+    best_core_edges.clear();
+  }
+
+  if (best.valid && parent_tree_guard(best, n, K)) {
+    Solution map50_candidate =
+        try_map50_core_exactification(graph, n, K, best, node_weight,
+                                      ranked_nodes, best_core_edges);
+    if (map50_candidate.valid && parent_tree_guard(map50_candidate, n, K)) {
+      best = map50_candidate;
+    }
   }
 
   if (best.valid && parent_tree_guard(best, n, K)) {
