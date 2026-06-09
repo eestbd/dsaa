@@ -213,6 +213,15 @@ GraphProfile estimate_profile(Graph &graph, int n, int K,
 
   profile.dense = profile.density >= 0.32;
 
+  if (profile.dense && n >= 3000) {
+    add_unique_seed(profile.screened_seeds, ranked_nodes[0]);
+    return profile;
+  }
+  if (!profile.dense && n < 2000) {
+    add_unique_seed(profile.screened_seeds, ranked_nodes[min(n - 1, 2)]);
+    return profile;
+  }
+
   sort(seed_scores.begin(), seed_scores.end(),
        [](const pair<double, int> &lhs, const pair<double, int> &rhs) {
          if (lhs.first != rhs.first) {
