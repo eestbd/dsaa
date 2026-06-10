@@ -73,7 +73,7 @@ int dense_pool_limit(int n, int K) {
 
   int limit = max(3 * K, 80);
   if (n >= 3000) {
-    limit = max(limit, 130);
+    limit = max(limit, 133);
   }
   limit = min(limit, 360);
   if (limit > n * 3 / 4) {
