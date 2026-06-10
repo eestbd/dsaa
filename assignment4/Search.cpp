@@ -69,6 +69,7 @@ int clamp_int(int value, int lo, int hi) {
 bool use_large_scale_tuning(int n, int K) { return n >= 2400 && K >= 25; }
 
 bool use_large_sparse_tuning(int n, int K) {
+  // Sparse large-K cases pay more for extra reads, so keep this gate narrow.
   return use_large_scale_tuning(n, K) && K <= 45;
 }
 
@@ -78,6 +79,7 @@ int dense_pool_limit(int n, int K) {
   }
 
   int limit = max(3 * K, 80);
+  // Dense maps benefit from a slightly wider first pool on large instances.
   if (use_large_scale_tuning(n, K)) {
     limit = max(limit, 133);
   }
@@ -94,6 +96,7 @@ int sparse_initial_pool_limit(int n, int K) {
   }
 
   int limit = max(3 * K, 85);
+  // This is only used for sparse graphs where the extra frontier usually pays.
   if (use_large_sparse_tuning(n, K)) {
     limit = max(4 * K, 175);
   }
@@ -117,6 +120,8 @@ GreedyTuning choose_tuning(int n, int K, bool dense) {
 
   if (dense) {
     if (K <= 80) {
+      // Dense scoring is mostly about avoiding a bad connection, not just
+      // chasing the largest node weight.
       if (n < 2000) {
         return {1.45, 1.05, 9.0, -1.10, 4};
       }
@@ -176,6 +181,8 @@ bool find_core_edge(const vector<CoreEdge> &edge_log, int source, int target,
 
 GraphProfile estimate_profile(Graph &graph, int n, int K,
                               const vector<int> &ranked_nodes) {
+  // The probe stays small on purpose.  It picks the search mode without
+  // spending enough reads to hurt the final score.
   GraphProfile profile;
   profile.dense = false;
   profile.density = 0.0;
@@ -292,6 +299,7 @@ void update_summary(int source, int target, int edge,
     return;
   }
 
+  // Keep only the few facts the greedy score needs; no adjacency cache here.
   ++seen_degree[target];
   if (soft_edge[target] == NO_EDGE || edge > soft_edge[target]) {
     soft_edge[target] = edge;
@@ -358,6 +366,7 @@ double evaluate_candidate(int node, const vector<int> &node_weight,
                           const vector<int> &bad_count,
                           const vector<int> &seen_degree,
                           const GreedyTuning &tuning) {
+  // Soft edge helps attach safely, trap edge keeps very negative edges visible.
   double score = static_cast<double>(node_weight[node]);
   score += tuning.soft_weight * static_cast<double>(soft_edge[node]);
   score += tuning.trap_weight * static_cast<double>(trap_edge[node]);
@@ -421,6 +430,7 @@ int choose_rcl_candidate(const vector<int> &ranked_nodes, int pool_limit,
     return rcl[0].node;
   }
 
+  // Randomized runs are allowed to explore, but not to take a much worse pick.
   uniform_int_distribution<int> distribution(0, choice_limit - 1);
   int pick = distribution(rng);
   if (pick > 0 && rcl[pick].score + 12.0 < rcl[0].score) {
@@ -543,6 +553,7 @@ Solution run_trap_aware_greedy(Graph &graph, int n, int K, int seed,
 
 long long exact_audit_score(Graph &graph, const vector<int> &nodes,
                             const vector<int> &node_weight) {
+  // Exact tree score over the chosen nodes, used only when K is small enough.
   int K = static_cast<int>(nodes.size());
   if (K == 0) {
     return NEG_INF;
@@ -619,6 +630,7 @@ long long partial_audit_score(Graph &graph, const Solution &solution,
   int trap = NO_EDGE;
   long long severe_sum = 0;
 
+  // Larger answers get a cheap local audit instead of a full K^2 scan.
   for (int i = 1; i < K; ++i) {
     int begin = max(0, i - window);
     for (int j = begin; j < i; ++j) {
@@ -668,6 +680,7 @@ void audit_solution(Graph &graph, Solution &solution,
 vector<int>
 make_seed_list(int n, int K, const vector<int> &ranked_nodes,
                const GraphProfile &profile) {
+  // More seeds mean more reads.  Most tuned cases are strongest from one seed.
   int start_count = 3;
   if (n <= 100) {
     start_count = 1;
@@ -751,6 +764,7 @@ bool parent_tree_guard(const Solution &solution, int n, int K) {
 
 Solution connected_fallback(Graph &graph, int n, int K,
                             const vector<int> &ranked_nodes) {
+  // Last resort: build any connected K-node answer before submitting nothing.
   Solution result;
   if (K <= 0 || K > n) {
     return result;
@@ -836,6 +850,7 @@ long long score_for_swap_audit(Graph &graph, const Solution &solution,
 void capped_leaf_swap(Graph &graph, Solution &best, int n,
                       const vector<int> &node_weight,
                       const vector<int> &ranked_nodes, int bad_edge_limit) {
+  // This pass is deliberately capped; wider swaps tended to burn reads.
   int K = static_cast<int>(best.nodes.size());
   if (!best.valid || K < 2 || n <= K || n <= 100) {
     return;
@@ -1053,6 +1068,7 @@ bool exact_score_from_known_core(const vector<int> &nodes,
                                  long long &score,
                                  vector<int> &tree_parent,
                                  vector<int> &tree_parent_edge) {
+  // Reuse edges already read during the small-map search whenever possible.
   int K = static_cast<int>(nodes.size());
   if (K == 0) {
     return false;
@@ -1186,6 +1202,7 @@ Solution try_map50_core_exactification(Graph &graph, int n, int K,
                                        const vector<int> &node_weight,
                                        const vector<int> &ranked_nodes,
                                        const vector<CoreEdge> &edge_log) {
+  // The small case can afford a tiny exact repair around the best core.
   Solution improved;
   if (!baseline.valid || K < 2 || K > 10 || n > 120) {
     return improved;
@@ -1451,12 +1468,14 @@ void Search_MMST(Graph &graph, int K) {
   GraphProfile profile = estimate_profile(graph, n, K, ranked_nodes);
   vector<int> seeds = make_seed_list(n, K, ranked_nodes, profile);
 
+  // Main path: try the selected seeds, audit only when multiple seeds compete.
   Solution best;
   vector<CoreEdge> best_core_edges;
   for (size_t i = 0; i < seeds.size(); ++i) {
     vector<CoreEdge> candidate_core_edges;
     vector<CoreEdge> *edge_log = (n <= 120) ? &candidate_core_edges : nullptr;
     int run_index = static_cast<int>(i);
+    // For single-seed sparse runs, use the tuned deterministic RCL stream.
     if (!profile.dense && seeds.size() == 1 && n > 100) {
       run_index = use_large_sparse_tuning(n, K) ? 399 : 7;
     }
