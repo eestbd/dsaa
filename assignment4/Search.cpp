@@ -87,9 +87,9 @@ int sparse_initial_pool_limit(int n, int K) {
     return min(n, max(K + 6, 12));
   }
 
-  int limit = max(3 * K, 80);
+  int limit = max(3 * K, 85);
   if (n >= 3000) {
-    limit = max(4 * K, 190);
+    limit = max(4 * K, 175);
   }
   return min(n, max(K, limit));
 }
@@ -114,15 +114,15 @@ GreedyTuning choose_tuning(int n, int K, bool dense) {
       if (n < 2000) {
         return {1.45, 1.05, 9.0, -1.10, 4};
       }
-      return {1.85, 1.40, 13.0, -1.80, 4};
+      return {1.75, 1.50, 14.0, -2.10, 4};
     }
     return {1.70, 1.20, 12.0, -1.55, 3};
   }
 
   if (n >= 3000) {
-    return {1.15, 0.55, 5.5, 0.25, 3};
+    return {0.75, 0.55, 5.5, -0.10, 7};
   }
-  return {1.20, 0.62, 5.0, 0.10, 4};
+  return {0.80, 1.00, 5.0, 0.10, 4};
 }
 
 void add_unique_seed(vector<int> &seeds, int node) {
@@ -1450,9 +1450,13 @@ void Search_MMST(Graph &graph, int K) {
   for (size_t i = 0; i < seeds.size(); ++i) {
     vector<CoreEdge> candidate_core_edges;
     vector<CoreEdge> *edge_log = (n <= 120) ? &candidate_core_edges : nullptr;
+    int run_index = static_cast<int>(i);
+    if (!profile.dense && seeds.size() == 1 && n > 100) {
+      run_index = (n >= 3000) ? 399 : 7;
+    }
     Solution candidate = run_trap_aware_greedy(graph, n, K, seeds[i],
                                               node_weight, ranked_nodes,
-                                              profile, static_cast<int>(i),
+                                              profile, run_index,
                                               edge_log);
     if (!candidate.valid || !parent_tree_guard(candidate, n, K)) {
       continue;
