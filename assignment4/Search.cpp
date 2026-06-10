@@ -66,13 +66,19 @@ int clamp_int(int value, int lo, int hi) {
   return max(lo, min(hi, value));
 }
 
+bool use_large_scale_tuning(int n, int K) { return n >= 2400 && K >= 25; }
+
+bool use_large_sparse_tuning(int n, int K) {
+  return use_large_scale_tuning(n, K) && K <= 45;
+}
+
 int dense_pool_limit(int n, int K) {
   if (n <= 100) {
     return min(n, max(K + 3, 8));
   }
 
   int limit = max(3 * K, 80);
-  if (n >= 3000) {
+  if (use_large_scale_tuning(n, K)) {
     limit = max(limit, 133);
   }
   limit = min(limit, 360);
@@ -88,7 +94,7 @@ int sparse_initial_pool_limit(int n, int K) {
   }
 
   int limit = max(3 * K, 85);
-  if (n >= 3000) {
+  if (use_large_sparse_tuning(n, K)) {
     limit = max(4 * K, 175);
   }
   return min(n, max(K, limit));
@@ -98,7 +104,7 @@ int pool_growth_step(int n, int K, bool dense) {
   if (dense) {
     return max(60, 2 * K);
   }
-  if (n >= 3000) {
+  if (use_large_sparse_tuning(n, K)) {
     return max(120, 2 * K);
   }
   return max(80, 2 * K);
@@ -119,7 +125,7 @@ GreedyTuning choose_tuning(int n, int K, bool dense) {
     return {1.70, 1.20, 12.0, -1.55, 3};
   }
 
-  if (n >= 3000) {
+  if (use_large_sparse_tuning(n, K)) {
     return {0.75, 0.55, 5.5, -0.10, 7};
   }
   return {0.80, 1.00, 5.0, 0.10, 4};
@@ -183,7 +189,7 @@ GraphProfile estimate_profile(Graph &graph, int n, int K,
 
   int seed_count = min(n, (n <= 100) ? 2 : 3);
   int sample_count = min(n, (n <= 100) ? max(8, K + 5) : 24);
-  if (n >= 3000) {
+  if (use_large_scale_tuning(n, K)) {
     sample_count = min(n, 24);
   }
   sample_count = max(sample_count, min(n, max(24, K + 8)));
@@ -253,7 +259,7 @@ GraphProfile estimate_profile(Graph &graph, int n, int K,
 
   profile.dense = profile.density >= 0.32;
 
-  if (profile.dense && n >= 3000) {
+  if (profile.dense && use_large_scale_tuning(n, K)) {
     add_unique_seed(profile.screened_seeds, ranked_nodes[0]);
     return profile;
   }
@@ -858,7 +864,7 @@ void capped_leaf_swap(Graph &graph, Solution &best, int n,
       break;
     }
   }
-  int required_node_gain = (n >= 3000) ? 120 : 140;
+  int required_node_gain = use_large_scale_tuning(n, K) ? 120 : 140;
   if (best_outside_weight - weakest_leaf_weight < required_node_gain) {
     return;
   }
@@ -870,9 +876,9 @@ void capped_leaf_swap(Graph &graph, Solution &best, int n,
     }
   }
 
-  int max_iterations = (n >= 3000) ? 1 : 2;
+  int max_iterations = use_large_scale_tuning(n, K) ? 1 : 2;
   int leaf_limit = (K <= 80) ? 3 : 2;
-  int outside_limit = (n >= 3000) ? 18 : 20;
+  int outside_limit = use_large_scale_tuning(n, K) ? 18 : 20;
   int connect_scan_limit = (K <= 80) ? K : min(K, 48);
   long long min_gain = (K <= 80) ? 15 : 35;
 
@@ -1452,7 +1458,7 @@ void Search_MMST(Graph &graph, int K) {
     vector<CoreEdge> *edge_log = (n <= 120) ? &candidate_core_edges : nullptr;
     int run_index = static_cast<int>(i);
     if (!profile.dense && seeds.size() == 1 && n > 100) {
-      run_index = (n >= 3000) ? 399 : 7;
+      run_index = use_large_sparse_tuning(n, K) ? 399 : 7;
     }
     Solution candidate = run_trap_aware_greedy(graph, n, K, seeds[i],
                                               node_weight, ranked_nodes,
