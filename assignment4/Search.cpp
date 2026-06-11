@@ -16,6 +16,14 @@ const long long NEG_INF = numeric_limits<long long>::min() / 4;
 // High-level flow:
 // rank nodes by their own weight, estimate whether the graph is closer to dense or sparse,
 // then grow a connected K-node tree and apply a few guarded repairs.
+// The score rewards high node weights but subtracts edge costs and map reads,
+// so the search spends reads only where they are likely to change the final answer.
+
+// Graph data uses zero for missing edges and negative values for real edges.
+// The algorithm only attaches through negative edges because those are the valid graph connections.
+
+// NEG_INF marks candidates that should never win a comparison.
+// Dividing the minimum value by four leaves room for later additions without overflow.
 
 // One candidate answer
 // The parent arrays are kept in the same order as nodes, so parent[i] connects nodes[i].
@@ -44,6 +52,11 @@ struct GraphProfile {
   vector<int> screened_seeds;
 };
 
+// dense tells which tuned branch to use.
+// density is only a sampled estimate, not a full graph measurement.
+// bad_edge_limit marks edges that are risky enough to penalize during candidate scoring.
+// screened_seeds stores promising starting nodes found during the small probe.
+
 // Dense and sparse graphs want very different candidate scores so these weights stay together.
 struct GreedyTuning {
   double soft_weight;
@@ -52,6 +65,13 @@ struct GreedyTuning {
   double degree_weight;
   int rcl_size;
 };
+
+// soft_weight rewards an outside node that has a mild attachment to the current tree.
+// trap_weight keeps the worst seen edge visible,
+// since one severe edge can make a candidate fragile.
+// bad_penalty reduces scores for nodes repeatedly connected by very negative edges.
+// degree_weight gives a small bonus to nodes seen from multiple selected nodes.
+// rcl_size controls how many top candidates the randomized runs may choose from.
 
 // Temporary scored node used by the restricted candidate list.
 struct CandidateScore {
@@ -68,8 +88,13 @@ struct SwapMove {
   long long gain_hint;
 };
 
+// A swap move removes one leaf and adds one outside node.
+// Only leaves are considered here.
+// Replacing an internal node would require reconnecting its children.
+
 // Edge reads saved only for the small exact repair.
-// This is not a matrix; it only stores edges that were already touched by the search.
+// This is not a matrix
+// It only stores edges that were already touched by the search.
 struct CoreEdge {
   int a;
   int b;
@@ -114,14 +139,15 @@ int dense_pool_limit(int n, int K) {
 }
 
 // Pick the first candidate pool size for sparse-looking graphs.
-// The sparse path starts a bit wider because many top-ranked nodes may not connect to the current tree.
+// The sparse path starts a bit wider,
+// because many top-ranked nodes may not connect to the current tree.
 int sparse_initial_pool_limit(int n, int K) {
   if (n <= 100) {
     return min(n, max(K + 6, 12));
   }
 
   int limit = max(3 * K, 85);
-  // This is only used for sparse graphs where the extra frontier usually pays.
+  // Only used for sparse graphs where the extra frontier usually pays.
   if (use_large_sparse_tuning(n, K)) {
     limit = max(4 * K, 175);
   }
@@ -129,7 +155,8 @@ int sparse_initial_pool_limit(int n, int K) {
 }
 
 // Decide how much farther to open the ranked pool when greedy gets stuck.
-// A larger step is cheaper than repeated tiny expansions, since each expansion rescans selected nodes.
+// A larger step is cheaper than repeated tiny expansions,
+// since each expansion rescans selected nodes.
 int pool_growth_step(int n, int K, bool dense) {
   if (dense) {
     return max(60, 2 * K);
@@ -149,7 +176,8 @@ GreedyTuning choose_tuning(int n, int K, bool dense) {
 
   if (dense) {
     if (K <= 80) {
-      // Dense scoring is mostly about avoiding a bad connection, not just chasing the largest node weight.
+      // Dense scoring is mostly about avoiding a bad connection,
+      // not just chasing the largest node weight.
       if (n < 2000) {
         return {1.45, 1.05, 9.0, -1.10, 4};
       }
@@ -214,12 +242,13 @@ bool find_core_edge(const vector<CoreEdge> &edge_log, int source, int target,
 }
 
 // Sample a few high-weight nodes to decide density, seed order, and bad-edge cutoff.
-// This probe is intentionally small; it guides the search without spending much of the read budget.
+// The probe is small enough to guide the search without spending much read budget.
 GraphProfile estimate_profile(Graph &graph, int n, int K,
                               const vector<int> &ranked_nodes) {
-  // The probe stays small on purpose.
-  // It picks the search mode without spending enough reads to hurt the final score.
-  // Density decides the dense/sparse branch, and bad_edge_limit becomes the cutoff for risky edges.
+  // Density decides the dense/sparse branch,
+  // and bad_edge_limit becomes the cutoff for risky edges.
+  // The sample is biased toward high-weight nodes,
+  // since those nodes are most likely to be selected later.
   GraphProfile profile;
   profile.dense = false;
   profile.density = 0.0;
@@ -245,7 +274,8 @@ GraphProfile estimate_profile(Graph &graph, int n, int K,
   sampled_edges.reserve(seed_count * sample_count / 2);
 
   // Only the first few high-ranked nodes are sampled.
-  // This is enough to choose a seed order and estimate how often negative edges appear near the top ranks.
+  // This is enough to choose a seed order,
+  // and estimate how often negative edges appear near the top ranks.
   for (int s = 0; s < seed_count; ++s) {
     int seed = ranked_nodes[s];
     int edge_count = 0;
@@ -283,6 +313,8 @@ GraphProfile estimate_profile(Graph &graph, int n, int K,
                           ? -120.0
                           : static_cast<double>(edge_sum) /
                                 static_cast<double>(edge_count);
+    // A seed is preferred when it sees many usable edges, has a soft attachment option,
+    // and avoids too many severe edges in the small sample.
     double score = static_cast<double>(ranked_nodes.size() - s) * 0.01 +
                    static_cast<double>(edge_count) * 4.0 +
                    static_cast<double>(soft) * 0.9 +
@@ -297,6 +329,8 @@ GraphProfile estimate_profile(Graph &graph, int n, int K,
   }
 
   if (!sampled_edges.empty()) {
+    // The lower quartile becomes the risky-edge cutoff.
+    // This adapts the penalty to the current map instead of using one fixed threshold everywhere.
     sort(sampled_edges.begin(), sampled_edges.end());
     int index = static_cast<int>(sampled_edges.size()) / 4;
     profile.bad_edge_limit = sampled_edges[index];
@@ -305,6 +339,8 @@ GraphProfile estimate_profile(Graph &graph, int n, int K,
 
   profile.dense = profile.density >= 0.32;
 
+  // Dense large graphs are stable enough that the top node usually works as the seed.
+  // Sparse medium graphs often benefit from starting a little below the top rank.
   if (profile.dense && use_large_scale_tuning(n, K)) {
     add_unique_seed(profile.screened_seeds, ranked_nodes[0]);
     return profile;
@@ -340,7 +376,11 @@ void update_summary(int source, int target, int edge,
     return;
   }
 
-  // Keep only the few facts the greedy score needs; no adjacency cache here.
+  // Keep only the few facts the greedy score needs.
+  // No adjacency cache here.
+  // soft_edge chooses the safest known parent edge for attachment.
+  // trap_edge remembers the most dangerous seen edge so the score can avoid fragile nodes.
+  // bad_count tracks repeated severe edges, which usually indicate a risky candidate.
   ++seen_degree[target];
   if (soft_edge[target] == NO_EDGE || edge > soft_edge[target]) {
     soft_edge[target] = edge;
@@ -365,6 +405,8 @@ void scan_from_selected_node(Graph &graph, int source,
                              vector<int> &seen_degree,
                              vector<int> &attach_parent, int bad_edge_limit,
                              vector<CoreEdge> *edge_log = nullptr) {
+  // Each selected node scans only the current ranked pool.
+  // This keeps read count tied to K and pool size instead of n squared.
   for (int pos = 0; pos < limit; ++pos) {
     int target = ranked_nodes[pos];
     if (in_selected[target]) {
@@ -390,6 +432,9 @@ void expand_pool(Graph &graph, int old_limit, int new_limit,
                  vector<int> &attach_parent,
                  int bad_edge_limit,
                  vector<CoreEdge> *edge_log = nullptr) {
+  // Only the newly opened ranked interval is scanned.
+  // Previously scanned candidates keep their summaries,
+  // so widening the pool does not restart the search.
   for (size_t i = 0; i < selected_nodes.size(); ++i) {
     int source = selected_nodes[i];
     for (int pos = old_limit; pos < new_limit; ++pos) {
@@ -414,6 +459,7 @@ double evaluate_candidate(int node, const vector<int> &node_weight,
                           const vector<int> &seen_degree,
                           const GreedyTuning &tuning) {
   // Soft edge helps attach safely, trap edge keeps very negative edges visible.
+  // Node weight pushes the score upward, while weak or repeated risky edges pull it down.
   double score = static_cast<double>(node_weight[node]);
   score += tuning.soft_weight * static_cast<double>(soft_edge[node]);
   score += tuning.trap_weight * static_cast<double>(trap_edge[node]);
@@ -444,7 +490,8 @@ void insert_rcl_candidate(vector<CandidateScore> &rcl, int rcl_size, int node,
 }
 
 // Pick the next greedy node from the restricted candidate list.
-// run_index == 0 means pure greedy; other run indexes use a deterministic random stream for exploration.
+// run_index == 0 means pure greedy.
+// Other run indexes use a deterministic random stream for exploration.
 int choose_rcl_candidate(const vector<int> &ranked_nodes, int pool_limit,
                          const vector<char> &in_selected,
                          const vector<int> &node_weight,
@@ -455,6 +502,9 @@ int choose_rcl_candidate(const vector<int> &ranked_nodes, int pool_limit,
                          const vector<int> &attach_parent,
                          const GreedyTuning &tuning, mt19937 &rng,
                          int run_index) {
+  // The restricted candidate list keeps only the best few attachable nodes.
+  // Randomized runs can explore a little,
+  // but they still stay near the top scored candidates.
   vector<CandidateScore> rcl;
   rcl.reserve(tuning.rcl_size);
 
@@ -463,6 +513,8 @@ int choose_rcl_candidate(const vector<int> &ranked_nodes, int pool_limit,
     if (in_selected[node] || attach_parent[node] < 0) {
       continue;
     }
+    // A node must already have a negative edge to the tree.
+    // Otherwise adding it would break the connected subgraph requirement.
     if (soft_edge[node] >= 0) {
       continue;
     }
@@ -478,6 +530,7 @@ int choose_rcl_candidate(const vector<int> &ranked_nodes, int pool_limit,
 
   int choice_limit = static_cast<int>(rcl.size());
   if (run_index == 0) {
+    // The first run is fully deterministic and always takes the best visible candidate.
     return rcl[0].node;
   }
 
@@ -524,7 +577,8 @@ Solution run_trap_aware_greedy(Graph &graph, int n, int K, int seed,
   // Per-node summaries for nodes outside the current tree.
   // Each selected-node scan refreshes these arrays instead of storing all pairwise edges.
   // soft_edge is the best known parent edge, trap_edge remembers the worst seen edge,
-  // bad_count tracks risky edges, and seen_degree tells how many selected nodes have touched the candidate.
+  // bad_count tracks risky edges,
+  // and seen_degree tells how many selected nodes have touched the candidate.
   vector<int> soft_edge(n, NO_EDGE);
   vector<int> trap_edge(n, NO_EDGE);
   vector<int> bad_count(n, 0);
@@ -542,6 +596,8 @@ Solution run_trap_aware_greedy(Graph &graph, int n, int K, int seed,
   result.parent_edge.push_back(0);
   result.in_selected[seed] = 1;
   in_selected[seed] = 1;
+  // The seed is the root of the submitted tree.
+  // Its parent is stored as -1 so later checks can verify there is exactly one root.
 
   if (K == 1) {
     result.approx_score = node_weight[seed];
@@ -584,6 +640,8 @@ Solution run_trap_aware_greedy(Graph &graph, int n, int K, int seed,
     }
 
     if (chosen == -1) {
+      // No connected candidate was found even after opening the whole pool.
+      // Mark this run invalid so another seed or the fallback can take over.
       result.valid = false;
       return result;
     }
@@ -600,6 +658,7 @@ Solution run_trap_aware_greedy(Graph &graph, int n, int K, int seed,
     result.parent_edge.push_back(edge);
     result.in_selected[chosen] = 1;
     in_selected[chosen] = 1;
+    // After adding a node, scan from it so future candidates can attach through the new frontier.
 
     if (static_cast<int>(result.nodes.size()) < K) {
       scan_from_selected_node(graph, chosen, ranked_nodes, pool_limit,
@@ -619,6 +678,8 @@ Solution run_trap_aware_greedy(Graph &graph, int n, int K, int seed,
 long long exact_audit_score(Graph &graph, const vector<int> &nodes,
                             const vector<int> &node_weight) {
   // Exact tree score over the chosen nodes, used only when K is small enough.
+  // This rebuilds the best spanning tree inside the selected nodes,
+  // so it may improve on greedy parent edges.
   int K = static_cast<int>(nodes.size());
   if (K == 0) {
     return NEG_INF;
@@ -641,7 +702,9 @@ long long exact_audit_score(Graph &graph, const vector<int> &nodes,
   long long edge_sum = 0;
 
   // Prim-style rebuild over the chosen subset.
-  // The tree uses only negative edges; if no connecting edge exists, the candidate is invalid.
+  // The tree uses only negative edges
+  // If no connecting edge exists, the candidate is invalid.
+  // best_edge[i] stores the lowest-weight edge currently known from the growing tree to nodes[i].
   while (added < K) {
     for (int i = 0; i < K; ++i) {
       if (in_tree[i]) {
@@ -679,7 +742,8 @@ long long exact_audit_score(Graph &graph, const vector<int> &nodes,
 }
 
 // Check a local window of extra edges to estimate risk for larger K.
-// It is cheaper than a full subset scan and mainly catches candidates with many severe nearby edges.
+// It is cheaper than a full subset scan,
+// and mainly catches candidates with many severe nearby edges.
 long long partial_audit_score(Graph &graph, const Solution &solution,
                               const vector<int> &node_weight,
                               int bad_edge_limit) {
@@ -700,6 +764,8 @@ long long partial_audit_score(Graph &graph, const Solution &solution,
   long long severe_sum = 0;
 
   // Larger answers get a cheap local audit instead of a full K^2 scan.
+  // The window follows nearby insertion order,
+  // since those nodes were selected under similar pool states.
   for (int i = 1; i < K; ++i) {
     int begin = max(0, i - window);
     for (int j = begin; j < i; ++j) {
@@ -728,7 +794,7 @@ long long partial_audit_score(Graph &graph, const Solution &solution,
 }
 
 // Attach an audit score to a candidate and mark it invalid if disconnected.
-// Small candidates get an exact audit; larger ones get the cheaper local audit.
+// Small candidates get an exact audit, larger ones get the cheaper local audit.
 void audit_solution(Graph &graph, Solution &solution,
                     const vector<int> &node_weight, int bad_edge_limit) {
   int K = static_cast<int>(solution.nodes.size());
@@ -753,7 +819,10 @@ void audit_solution(Graph &graph, Solution &solution,
 vector<int>
 make_seed_list(int n, int K, const vector<int> &ranked_nodes,
                const GraphProfile &profile) {
-  // More seeds mean more reads.  Most tuned cases are strongest from one seed.
+  // More seeds mean more reads.
+  // Most tuned cases are strongest from one seed.
+  // Extra seeds are used when the graph is large enough,
+  // and one unlucky start could dominate the result.
   int start_count = 3;
   if (n <= 100) {
     start_count = 1;
@@ -769,6 +838,7 @@ make_seed_list(int n, int K, const vector<int> &ranked_nodes,
 
   vector<int> seeds;
   seeds.reserve(start_count + 4);
+  // Screened seeds come first because they were already tested by the profile probe.
   for (size_t i = 0; i < profile.screened_seeds.size(); ++i) {
     add_unique_seed(seeds, profile.screened_seeds[i]);
     if (static_cast<int>(seeds.size()) >= start_count) {
@@ -777,6 +847,7 @@ make_seed_list(int n, int K, const vector<int> &ranked_nodes,
   }
 
   for (int i = 0; i < n; ++i) {
+    // Fall back to raw node-weight order if the profile did not provide enough distinct seeds.
     add_unique_seed(seeds, ranked_nodes[i]);
     if (static_cast<int>(seeds.size()) >= start_count) {
       break;
@@ -788,6 +859,8 @@ make_seed_list(int n, int K, const vector<int> &ranked_nodes,
 // Sanity-check that a solution is exactly one connected parent tree.
 // This is a defensive guard before post-processing and before the final submit loop.
 bool parent_tree_guard(const Solution &solution, int n, int K) {
+  // The guard checks structure only, not score quality.
+  // It prevents repair code from submitting duplicate nodes or a disconnected parent chain.
   if (!solution.valid || static_cast<int>(solution.nodes.size()) != K) {
     return false;
   }
@@ -798,6 +871,7 @@ bool parent_tree_guard(const Solution &solution, int n, int K) {
   vector<char> seen(n, 0);
   vector<int> position(n, -1);
   for (int i = 0; i < K; ++i) {
+    // Build node to local-index mapping while rejecting duplicates and out-of-range values.
     int node = solution.nodes[i];
     if (node < 0 || node >= n || seen[node]) {
       return false;
@@ -808,6 +882,8 @@ bool parent_tree_guard(const Solution &solution, int n, int K) {
 
   int root_count = 0;
   for (int i = 0; i < K; ++i) {
+    // Every non-root node must point to another selected node.
+    // The root is required to be nodes[0], which keeps later parent arrays easy to reason about.
     int parent = solution.parent[i];
     if (parent < 0) {
       ++root_count;
@@ -827,6 +903,7 @@ bool parent_tree_guard(const Solution &solution, int n, int K) {
 
   vector<int> degree_zero_check(K, 0);
   for (int i = 1; i < K; ++i) {
+    // Degree counting is a light connectivity sanity check for the stored tree edges.
     int parent_index = position[solution.parent[i]];
     if (parent_index < 0) {
       return false;
@@ -839,10 +916,12 @@ bool parent_tree_guard(const Solution &solution, int n, int K) {
 
 // Simple BFS-style fallback that guarantees a connected submission if possible.
 // It is intentionally simple.
-// Its job is to avoid returning an invalid answer if the tuned greedy path fails on an unusual graph.
+// Its job is to avoid returning an invalid answer,
+// even if the tuned greedy path fails on an unusual graph.
 Solution connected_fallback(Graph &graph, int n, int K,
                             const vector<int> &ranked_nodes) {
   // Last resort: build any connected K-node answer before submitting nothing.
+  // It searches from high-weight seeds first, but accepts the first connected answer it can build.
   Solution result;
   if (K <= 0 || K > n) {
     return result;
@@ -867,6 +946,8 @@ Solution connected_fallback(Graph &graph, int n, int K,
     int frontier = 0;
     while (static_cast<int>(candidate.nodes.size()) < K &&
            frontier < static_cast<int>(candidate.nodes.size())) {
+      // This is ordinary BFS over the ranked node order.
+      // Once a negative edge is found, the target becomes part of the connected answer.
       int source = candidate.nodes[frontier++];
       for (int target_pos = 0; target_pos < n; ++target_pos) {
         int target = ranked_nodes[target_pos];
@@ -935,7 +1016,9 @@ long long score_for_swap_audit(Graph &graph, const Solution &solution,
 void capped_leaf_swap(Graph &graph, Solution &best, int n,
                       const vector<int> &node_weight,
                       const vector<int> &ranked_nodes, int bad_edge_limit) {
-  // This pass is deliberately capped; wider swaps tended to burn reads.
+  // This pass is deliberately capped.
+  // Wider swaps tended to burn reads.
+  // It runs only when a high-weight outside node can plausibly replace a weak leaf.
   int K = static_cast<int>(best.nodes.size());
   if (!best.valid || K < 2 || n <= K || n <= 100) {
     return;
@@ -965,6 +1048,8 @@ void capped_leaf_swap(Graph &graph, Solution &best, int n,
     }
   }
   int required_node_gain = use_large_scale_tuning(n, K) ? 120 : 140;
+  // If the best outside node is not much heavier than the weakest leaf,
+  // the edge-read cost of testing swaps is unlikely to pay back.
   if (best_outside_weight - weakest_leaf_weight < required_node_gain) {
     return;
   }
@@ -984,7 +1069,8 @@ void capped_leaf_swap(Graph &graph, Solution &best, int n,
 
   for (int iteration = 0; iteration < max_iterations; ++iteration) {
     // Start with the weakest leaves.
-    // Replacing internal nodes would need a more expensive reconnect check, so this pass only touches leaves.
+    // Replacing internal nodes would need a more expensive reconnect check,
+    // so this pass only touches leaves.
     vector<int> degree = tree_degree_by_index(best, n);
     vector<int> leaves;
     for (int i = 1; i < K; ++i) {
@@ -1009,6 +1095,8 @@ void capped_leaf_swap(Graph &graph, Solution &best, int n,
 
     vector<int> outside;
     outside.reserve(outside_limit);
+    // Outside candidates are taken from node-weight order.
+    // This keeps the swap search focused on replacements that can beat the removed leaf.
     for (int node : ranked_nodes) {
       if (!in_best[node]) {
         outside.push_back(node);
@@ -1036,6 +1124,8 @@ void capped_leaf_swap(Graph &graph, Solution &best, int n,
         int trap = NO_EDGE;
         int bad = 0;
         int scans = 0;
+        // Scan a small sample of current tree nodes to find a parent for the outside node.
+        // For large K the sample is spread across the tree instead of taking only the prefix.
         for (int scan = 0; scan < K && scans < connect_scan_limit; ++scan) {
           int i = scan;
           if (K > connect_scan_limit) {
@@ -1069,6 +1159,8 @@ void capped_leaf_swap(Graph &graph, Solution &best, int n,
             static_cast<long long>(node_weight[leaf_node]) + soft +
             static_cast<long long>(trap) / 3 -
             static_cast<long long>(bad) * 8;
+        // The hint is intentionally conservative.
+        // Expensive audit reads are saved for moves that already look positive.
         if (gain_hint <= 0) {
           continue;
         }
@@ -1097,6 +1189,8 @@ void capped_leaf_swap(Graph &graph, Solution &best, int n,
     bool improved = false;
     int audit_count = min(3, static_cast<int>(moves.size()));
     for (int i = 0; i < audit_count; ++i) {
+      // Only the best few hinted moves are audited with the real scoring rule.
+      // This prevents one local improvement pass from spending the whole read budget.
       Solution trial = best;
       const SwapMove &move = moves[i];
       trial.in_selected[trial.nodes[move.leaf_index]] = 0;
@@ -1133,6 +1227,9 @@ struct SubsetEdge {
   int weight;
 };
 
+// SubsetEdge uses local indexes inside the candidate node list.
+// This makes exact scoring independent from the original graph node numbers.
+
 // Find the representative in the small union-find used by exact scoring.
 // This is path-compressed because it is called repeatedly while rebuilding a tree.
 int find_root(vector<int> &parent, int node) {
@@ -1164,6 +1261,7 @@ bool exact_score_from_known_core(const vector<int> &nodes,
                                  vector<int> &tree_parent,
                                  vector<int> &tree_parent_edge) {
   // Reuse edges already read during the small-map search whenever possible.
+  // The function returns false instead of reading more, so callers keep control of the read budget.
   int K = static_cast<int>(nodes.size());
   if (K == 0) {
     return false;
@@ -1216,6 +1314,8 @@ bool exact_score_from_known_core(const vector<int> &nodes,
     roots[i] = i;
   }
 
+  // Kruskal rebuilds the MST that Graph::calc_subgraph will use for these nodes.
+  // Matching that rule makes the small repair compare candidates with the grader's score logic.
   vector<SubsetEdge> tree_edges;
   tree_edges.reserve(K - 1);
   long long edge_sum = 0;
@@ -1239,6 +1339,7 @@ bool exact_score_from_known_core(const vector<int> &nodes,
   stack.reserve(K);
   tree_parent[0] = -1;
   stack.push_back(0);
+  // Convert undirected MST edges back into the parent array format expected by Solution.
   for (size_t cursor = 0; cursor < stack.size(); ++cursor) {
     int current = stack[cursor];
     for (const SubsetEdge &edge : tree_edges) {
@@ -1269,6 +1370,8 @@ bool exact_score_from_known_core(const vector<int> &nodes,
 bool fill_missing_core_edges(Graph &graph, const vector<int> &nodes,
                              vector<CoreEdge> &edge_log,
                              int &extra_reads, int max_extra_reads) {
+  // Count missing edges before reading any of them.
+  // If the full completion would exceed the cap, the repair is skipped cleanly.
   int missing = 0;
   for (int i = 0; i < static_cast<int>(nodes.size()); ++i) {
     for (int j = i + 1; j < static_cast<int>(nodes.size()); ++j) {
@@ -1305,6 +1408,7 @@ Solution try_map50_core_exactification(Graph &graph, int n, int K,
                                        const vector<int> &ranked_nodes,
                                        const vector<CoreEdge> &edge_log) {
   // The small case can afford a tiny exact repair around the best core.
+  // It is restricted to map50-like inputs because completing all pair edges grows quickly.
   Solution improved;
   if (!baseline.valid || K < 2 || K > 10 || n > 120) {
     return improved;
@@ -1381,6 +1485,8 @@ Solution try_map50_core_exactification(Graph &graph, int n, int K,
     in_baseline[node] = 1;
   }
 
+  // The frontier starts just after the obvious top-ranked area.
+  // This tests near-miss nodes that greedy may have skipped because of early connectivity limits.
   int frontier_begin = min(n, max(K + 3, 8));
   int frontier_end = min(n, max(frontier_begin, K + 9));
   frontier_end = min(frontier_end, 16);
@@ -1415,6 +1521,7 @@ Solution try_map50_core_exactification(Graph &graph, int n, int K,
 
   vector<CandidateScore> frontier;
   for (int pos = frontier_begin; pos < frontier_end; ++pos) {
+    // Score frontier nodes by their own weight plus the softest known anchor connection.
     int target = ranked_nodes[pos];
     if (in_baseline[target]) {
       continue;
@@ -1450,7 +1557,8 @@ Solution try_map50_core_exactification(Graph &graph, int n, int K,
     frontier.resize(3);
   }
 
-  // Compare the best new frontier nodes against the weakest removable baseline nodes before the exact rebuild.
+  // Compare the best new frontier nodes against the weakest removable baseline nodes,
+  // before the exact rebuild.
   vector<pair<double, int> > removable;
   for (int i = 0; i < K; ++i) {
     if (i == hub_index || i == partner_index) {
@@ -1492,6 +1600,7 @@ Solution try_map50_core_exactification(Graph &graph, int n, int K,
   remove_indices.push_back(removable[0].second);
   remove_indices.push_back(removable[1].second);
 
+  // The hint must clear a small margin before the exact rebuild spends more reads.
   double replacement_hint = frontier[0].score + frontier[1].score -
                             removable[0].first - removable[1].first;
   if (replacement_hint <= 12.0) {
@@ -1550,8 +1659,9 @@ Solution try_map50_core_exactification(Graph &graph, int n, int K,
 
 } // namespace
 
-// Entry point called by the grader: choose K nodes and submit them once.
-// All graph access stays inside read_map/get_graph_size/submit_node, and the final loop is the only place that calls submit_node.
+// Entry point called by the grader -> choose K nodes and submit them once.
+// All graph access stays inside read_map/get_graph_size/submit_node,
+// and the final loop is the only place that calls submit_node.
 void Search_MMST(Graph &graph, int K) {
   int n = graph.get_graph_size();
   if (K <= 0 || n <= 0 || K > n) {
@@ -1559,7 +1669,10 @@ void Search_MMST(Graph &graph, int K) {
   }
 
   // First read only node weights from the diagonal and sort nodes by that value.
-  // The rest of the search uses this ranking as the candidate order instead of scanning the whole graph.
+  // The rest of the search uses this ranking as the candidate order,
+  // instead of scanning the whole graph.
+  // This is the only unavoidable full pass,
+  // because every node weight can affect the final top-K choice.
   vector<int> node_weight(n, 0);
   for (int i = 0; i < n; ++i) {
     node_weight[i] = graph.read_map(i, i);
@@ -1579,9 +1692,12 @@ void Search_MMST(Graph &graph, int K) {
   GraphProfile profile = estimate_profile(graph, n, K, ranked_nodes);
   vector<int> seeds = make_seed_list(n, K, ranked_nodes, profile);
 
-  // The profile chooses dense or sparse tuning, while the seed list controls how many greedy runs are tried.
-  // Most cases use one seed to save reads, and extra seeds are audited before they can replace the best answer.
+  // The profile chooses dense or sparse tuning,
+  // while the seed list controls how many greedy runs are tried.
+  // Most cases use one seed to save reads,
+  // and extra seeds are audited before they can replace the best answer.
   // Main path: try the selected seeds, audit only when multiple seeds compete.
+  // For small maps an edge log is kept so exact repair can reuse reads that already happened.
   Solution best;
   vector<CoreEdge> best_core_edges;
   for (size_t i = 0; i < seeds.size(); ++i) {
@@ -1589,6 +1705,7 @@ void Search_MMST(Graph &graph, int K) {
     vector<CoreEdge> *edge_log = (n <= 120) ? &candidate_core_edges : nullptr;
     int run_index = static_cast<int>(i);
     // For single-seed sparse runs, use the tuned deterministic RCL stream.
+    // The run index changes the random stream while keeping results reproducible.
     if (!profile.dense && seeds.size() == 1 && n > 100) {
       run_index = use_large_sparse_tuning(n, K) ? 399 : 7;
     }
@@ -1615,6 +1732,7 @@ void Search_MMST(Graph &graph, int K) {
   }
 
   if (!best.valid || !parent_tree_guard(best, n, K)) {
+    // If all tuned runs fail structurally, still try to submit a valid connected answer.
     best = connected_fallback(graph, n, K, ranked_nodes);
     best_core_edges.clear();
   }
@@ -1640,9 +1758,11 @@ void Search_MMST(Graph &graph, int K) {
   }
 
   if (!best.valid || !parent_tree_guard(best, n, K)) {
+    // Returning without submission is safer than submitting an invalid node list.
     return;
   }
 
+  // submit_node is called only after every guard has accepted the final candidate.
   for (int node : best.nodes) {
     graph.submit_node(node);
   }
